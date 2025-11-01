@@ -66,7 +66,9 @@ async function testMastraIntegration() {
     process.env.OPENAI_API_KEY = 'test-openai-key';
     delete process.env.WHISPER_API_KEY;
     
-    // Force module reload
+    // Note: We clear the module cache to test different environment configurations.
+    // This is acceptable in tests but should not be used in production code.
+    // Each test configuration starts fresh to validate environment variable handling.
     delete require.cache[require.resolve('./server/mastra-transcription')];
     delete require.cache[require.resolve('@mastra/voice-openai')];
     

@@ -14,13 +14,21 @@ const DEFAULT_FORMAT = (process.env.TRANSCRIPT_OUTPUT || 'vtt').toLowerCase();
 
 // Initialize Mastra OpenAI Voice
 // This will use OPENAI_API_KEY from environment or WHISPER_API_KEY if provided
-const WHISPER_API_KEY = process.env.WHISPER_API_KEY || process.env.OPENAI_API_KEY || '';
+const WHISPER_API_KEY = process.env.WHISPER_API_KEY || process.env.OPENAI_API_KEY;
 const WHISPER_BASE_URL = process.env.WHISPER_BASE_URL || '';
+
+if (!WHISPER_API_KEY) {
+  console.warn('[Transcription] Warning: No API key configured. Set OPENAI_API_KEY or WHISPER_API_KEY environment variable.');
+}
 
 let mastraVoice;
 
 function initializeMastraVoice() {
   if (mastraVoice) return mastraVoice;
+  
+  if (!WHISPER_API_KEY) {
+    throw new Error('No API key configured for transcription. Set OPENAI_API_KEY or WHISPER_API_KEY environment variable.');
+  }
   
   const config = {
     listeningModel: {
@@ -38,6 +46,7 @@ function initializeMastraVoice() {
   // If custom base URL is provided, override the OpenAI client
   if (WHISPER_BASE_URL && WHISPER_BASE_URL.trim().length > 0) {
     const OpenAI = require('openai');
+    // Handle both formats: with or without /v1 suffix
     const baseURL = WHISPER_BASE_URL.endsWith('/v1') 
       ? WHISPER_BASE_URL 
       : `${WHISPER_BASE_URL}/v1`;
@@ -182,7 +191,8 @@ async function transcribeFileVtt(filePath, language = DEFAULT_LANGUAGE, onProgre
   if (onProgress) { try { onProgress(50); } catch {} }
   
   // Use Mastra's underlying OpenAI client to get VTT format
-  // We need to use the client directly because Mastra's listen() only returns text
+  // Note: Reading file into memory is acceptable here as audio is already chunked
+  // into small segments (typically 15-minute chunks) by the segmentAudio function
   const file = await fs.promises.readFile(filePath);
   const fileObj = new File([file], path.basename(filePath));
   
