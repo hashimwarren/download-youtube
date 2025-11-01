@@ -32,21 +32,24 @@ Paste a YouTube URL, then either:
 - Get MP4 — downloads the MP4 file.
 - Transcribe to VTT — generates and lets you download a .vtt transcript.
 
-To enable transcription, configure a self-hosted OpenAI-compatible Whisper server via `.env`:
+To enable transcription, configure OpenAI API or a self-hosted OpenAI-compatible Whisper server via `.env`:
 
 ```
+OPENAI_API_KEY=your-openai-api-key
+# OR for self-hosted Whisper:
 WHISPER_BASE_URL=http://localhost:11434
-WHISPER_API_KEY=
-WHISPER_MODEL=whisper-1
+WHISPER_API_KEY=your-api-key
 TRANSCRIPT_LANG=en
 TRANSCRIPT_OUTPUT=vtt
 TRANSCRIPT_CHUNK_MIN=15
 ```
 
 Notes:
-- The server downloads audio-only, splits long audio into chunks, calls your Whisper server for each, then merges captions into a single VTT.
+- The transcription system uses **Mastra** (TypeScript AI framework) with OpenAI's Whisper model for high-quality audio transcription.
+- The server downloads audio-only, splits long audio into chunks, uses Mastra to transcribe each chunk, then merges captions into a single VTT.
 - Default language is English; set `TRANSCRIPT_LANG` for other languages or auto-detection.
 - Transcripts are saved to the `downloads/` folder and can be fetched via `GET /api/transcripts/:file`.
+- Mastra supports both OpenAI's hosted Whisper API and self-hosted OpenAI-compatible endpoints.
 
 ## CLI Usage
 
@@ -97,4 +100,4 @@ node index.js --url "https://www.youtube.com/watch?v=ngDCxlZcecw" --out "./downl
 - The script bundles ffmpeg via `ffmpeg-static`; no system install required.
 - Default container is MKV to avoid re-encoding and keep it fast and high quality.
 - MP4 mode prefers MP4-compatible streams (video mp4, audio m4a) and remuxes to MP4 when possible. If your video only has incompatible streams, yt-dlp may fall back to non-MP4 or fail to remux without re-encoding. If you need forced re-encode to MP4, we can add an option; note it is slower.
-- Transcription requires a self-hosted Whisper server exposing an OpenAI-compatible `POST /v1/audio/transcriptions` endpoint. The request includes fields `model`, `language`, `response_format=vtt`, and the uploaded `file`.
+- Transcription uses **Mastra** (TypeScript AI framework) with OpenAI Whisper for high-quality speech-to-text. Mastra provides a clean abstraction over the OpenAI API and supports both hosted and self-hosted Whisper endpoints.

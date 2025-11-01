@@ -3,9 +3,8 @@ const path = require('path');
 const os = require('os');
 const ytdlp = require('yt-dlp-exec');
 const ffmpegPath = require('ffmpeg-static');
-const FormData = require('form-data');
-const axios = require('axios');
 const sanitize = require('sanitize-filename');
+const { OpenAIVoice } = require('@mastra/voice-openai');
 
 // Configuration defaults
 const DEFAULT_CHUNK_SECONDS = Number(process.env.TRANSCRIPT_CHUNK_MIN || 15) * 60; // minutes -> seconds
@@ -13,13 +12,52 @@ const DEFAULT_CHUNK_OVERLAP = 2; // seconds
 const DEFAULT_LANGUAGE = process.env.TRANSCRIPT_LANG || 'en';
 const DEFAULT_FORMAT = (process.env.TRANSCRIPT_OUTPUT || 'vtt').toLowerCase();
 
+// Initialize Mastra OpenAI Voice
+// This will use OPENAI_API_KEY from environment or WHISPER_API_KEY if provided
+const WHISPER_API_KEY = process.env.WHISPER_API_KEY || process.env.OPENAI_API_KEY;
 const WHISPER_BASE_URL = process.env.WHISPER_BASE_URL || '';
-const WHISPER_API_KEY = process.env.WHISPER_API_KEY || '';
-let WHISPER_MODEL = process.env.WHISPER_MODEL || '';
 
-if (WHISPER_BASE_URL && WHISPER_BASE_URL.endsWith('/')) {
-  // Normalize trailing slash off
-  process.env.WHISPER_BASE_URL = WHISPER_BASE_URL.replace(/\/$/, '');
+if (!WHISPER_API_KEY) {
+  console.warn('[Transcription] Warning: No API key configured. Set OPENAI_API_KEY or WHISPER_API_KEY environment variable.');
+}
+
+let mastraVoice;
+
+function initializeMastraVoice() {
+  if (mastraVoice) return mastraVoice;
+  
+  if (!WHISPER_API_KEY) {
+    throw new Error('No API key configured for transcription. Set OPENAI_API_KEY or WHISPER_API_KEY environment variable.');
+  }
+  
+  const config = {
+    listeningModel: {
+      name: 'whisper-1',
+      apiKey: WHISPER_API_KEY
+    },
+    speechModel: {
+      name: 'tts-1',
+      apiKey: WHISPER_API_KEY  // Use same key for speech (though we only use listening)
+    }
+  };
+  
+  mastraVoice = new OpenAIVoice(config);
+  
+  // If custom base URL is provided, override the OpenAI client
+  if (WHISPER_BASE_URL && WHISPER_BASE_URL.trim().length > 0) {
+    const OpenAI = require('openai');
+    // Handle both formats: with or without /v1 suffix
+    const baseURL = WHISPER_BASE_URL.endsWith('/v1') 
+      ? WHISPER_BASE_URL 
+      : `${WHISPER_BASE_URL}/v1`;
+    
+    mastraVoice.listeningClient = new OpenAI({
+      apiKey: WHISPER_API_KEY,
+      baseURL
+    });
+  }
+  
+  return mastraVoice;
 }
 
 async function getVideoTitle(url) {
@@ -49,7 +87,7 @@ async function getVideoTitle(url) {
 async function downloadAudioOnly(url, outPath) {
   const flags = {
     extractAudio: true,
-    audioFormat: 'm4a', // smaller than wav; we'll segment via ffmpeg
+    audioFormat: 'm4a',
     audioQuality: 0,
     output: outPath,
     ffmpegLocation: ffmpegPath,
@@ -109,7 +147,6 @@ function shiftVttTimestamps(vttText, offsetSeconds) {
 }
 
 async function segmentAudio(inputFile, segmentSeconds, overlapSeconds, tmpDir, onProgress) {
-  // Transcode and segment to WAV (16kHz mono) for broad compatibility
   console.log('[Transcription] Segmenting audio into chunks...');
   const segmentPattern = path.join(tmpDir, 'seg-%04d.wav');
   const { spawn } = require('child_process');
@@ -128,7 +165,7 @@ async function segmentAudio(inputFile, segmentSeconds, overlapSeconds, tmpDir, o
     proc.on('error', reject);
     proc.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`ffmpeg exited ${code}`))));
   });
-  // Collect segments and compute offsets
+  
   const files = (await fs.promises.readdir(tmpDir))
     .filter(f => /^seg-\d{4}\.wav$/.test(f))
     .sort();
@@ -138,100 +175,87 @@ async function segmentAudio(inputFile, segmentSeconds, overlapSeconds, tmpDir, o
   }));
   console.log(`[Transcription] Created ${segments.length} audio segments`);
   if (onProgress) {
-    // After segmentation, bump progress a bit (e.g., 30%)
     try { onProgress(30); } catch {}
   }
   return segments;
 }
 
 async function transcribeFileVtt(filePath, language = DEFAULT_LANGUAGE, onProgress) {
-  // Default to OpenAI if base URL is not provided
-  const baseUrl = process.env.WHISPER_BASE_URL && process.env.WHISPER_BASE_URL.trim().length > 0
-    ? process.env.WHISPER_BASE_URL
-    : 'https://api.openai.com/v1';
-  if ((/^https?:\/\/api\.openai\.com/i.test(baseUrl)) && !WHISPER_API_KEY) {
-    throw new Error('Missing WHISPER_API_KEY for OpenAI transcription');
+  const voice = initializeMastraVoice();
+  
+  if (!voice.listeningClient) {
+    throw new Error('Mastra listening client not configured. Ensure OPENAI_API_KEY or WHISPER_API_KEY is set.');
   }
-  // Choose sensible default model: OpenAI -> gpt-4o-mini-transcribe, otherwise whisper-1
-  const effectiveModel = WHISPER_MODEL || (/(^https?:\/\/)?api\.openai\.com/i.test(baseUrl) ? 'gpt-4o-mini-transcribe' : 'whisper-1');
-  // Handle both formats: with or without /v1 suffix
-  const url = baseUrl.endsWith('/v1') 
-    ? `${baseUrl}/audio/transcriptions`
-    : `${baseUrl}/v1/audio/transcriptions`;
-  const form = new FormData();
-  form.append('model', effectiveModel);
-  form.append('response_format', 'vtt');
-  form.append('language', language);
-  form.append('temperature', '0');
-  form.append('file', fs.createReadStream(filePath), path.basename(filePath));
-
-  const headers = form.getHeaders();
-  if (WHISPER_API_KEY) {
-    headers['Authorization'] = `Bearer ${WHISPER_API_KEY}`;
-  }
+  
+  console.log('[Transcription] Transcribing with Mastra OpenAIVoice...');
+  if (onProgress) { try { onProgress(50); } catch {} }
+  
+  // Use Mastra's underlying OpenAI client to get VTT format
+  // Note: Reading file into memory is acceptable here as audio is already chunked
+  // into small segments (typically 15-minute chunks) by the segmentAudio function
+  const file = await fs.promises.readFile(filePath);
+  const fileObj = new File([file], path.basename(filePath));
+  
   try {
-    console.log(`[Transcription] Calling Whisper API: ${url}`);
-    if (onProgress) { try { onProgress(50); } catch {} }
-    const res = await axios.post(url, form, { headers, maxContentLength: Infinity, maxBodyLength: Infinity, timeout: 1000 * 60 * 15 });
-    console.log('[Transcription] Whisper API call successful');
+    const response = await voice.listeningClient.audio.transcriptions.create({
+      model: 'whisper-1',
+      file: fileObj,
+      response_format: 'vtt',
+      language: language,
+      temperature: 0
+    });
+    
+    console.log('[Transcription] Mastra transcription successful');
     if (onProgress) { try { onProgress(70); } catch {} }
-    return res.data; // Expect string VTT
+    
+    // The response will be the VTT text directly
+    return response;
   } catch (e) {
     const status = e?.response?.status;
     const data = e?.response?.data;
     const detail = typeof data === 'string' ? data : JSON.stringify(data);
-    const msg = `Whisper request failed${status ? ` (${status})` : ''}${detail ? `: ${detail}` : ''}`;
-    const err = new Error(msg);
-    throw err;
+    const msg = `Mastra transcription failed${status ? ` (${status})` : ''}${detail ? `: ${detail}` : ''}`;
+    throw new Error(msg);
   }
 }
 
 async function transcribeUrlToVtt({ url, chunkSeconds = DEFAULT_CHUNK_SECONDS, language = DEFAULT_LANGUAGE, onProgress }) {
-  // Create temp workspace
   const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'yttr-'));
   const audioPath = path.join(tmpDir, 'audio.m4a');
 
   try {
-    // Step 1: download audio-only
     console.log('[Transcription] Downloading audio from YouTube…');
     if (onProgress) { try { onProgress(10); } catch {} }
     await downloadAudioOnly(url, audioPath);
     if (onProgress) { try { onProgress(20); } catch {} }
 
-    // Step 2: segment audio
     const segments = await segmentAudio(audioPath, chunkSeconds, DEFAULT_CHUNK_OVERLAP, tmpDir, onProgress);
 
-    // Step 3: transcribe each segment, shift timestamps, and concatenate
     const parts = [];
     for (let i = 0; i < segments.length; i++) {
       const seg = segments[i];
-      console.log(`[Transcription] Transcribing segment ${i + 1}/${segments.length}`);
+      console.log(`[Transcription] Transcribing segment ${i + 1}/${segments.length} with Mastra`);
       const vtt = await transcribeFileVtt(seg.file, language, onProgress);
       const shifted = shiftVttTimestamps(String(vtt), seg.offsetSeconds);
-      // remove duplicate WEBVTT headers in middle parts
       const clean = i === 0 ? shifted : shifted.replace(/^WEBVTT\s*\n?/, '');
       parts.push(clean.trim());
       if (onProgress) {
-        // Progressively move from 30% to 85% across segments
         const pct = 30 + Math.floor(((i + 1) / segments.length) * 55);
         try { onProgress(Math.min(85, pct)); } catch {}
       }
     }
 
-    // Ensure single WEBVTT header
     let combined = parts.join('\n\n').trim();
     if (!/^WEBVTT/.test(combined)) {
       combined = 'WEBVTT\n\n' + combined;
     }
 
-    // Produce a filename
     const title = await getVideoTitle(url);
     const fileName = `${title}.vtt`;
 
     if (onProgress) { try { onProgress(90); } catch {} }
     return { vtt: combined, fileName, tmpDir, audioPath };
   } catch (err) {
-    // attempt cleanup
     try { await fs.promises.unlink(audioPath); } catch {}
     try { await fs.promises.rm(tmpDir, { recursive: true, force: true }); } catch {}
     throw err;
@@ -239,13 +263,12 @@ async function transcribeUrlToVtt({ url, chunkSeconds = DEFAULT_CHUNK_SECONDS, l
 }
 
 async function extractAudioFromVideo(videoPath, outAudioPath, onProgress) {
-  // Extract audio stream to an intermediate file; prefer without re-encode but fall back to AAC
   console.log('[Transcription] Extracting audio from video...');
   const { spawn } = require('child_process');
   const args = [
     '-hide_banner', '-y',
     '-i', videoPath,
-    '-vn', // no video
+    '-vn',
     '-acodec', 'aac',
     '-b:a', '192k',
     outAudioPath
@@ -270,17 +293,13 @@ async function transcribeLocalFileToVtt({ filePath, chunkSeconds = DEFAULT_CHUNK
   const audioPath = path.join(tmpDir, 'audio.m4a');
 
   try {
-    // Extract audio from video
     await extractAudioFromVideo(filePath, audioPath, onProgress);
-
-    // Segment audio
     const segments = await segmentAudio(audioPath, chunkSeconds, DEFAULT_CHUNK_OVERLAP, tmpDir, onProgress);
 
-    // Transcribe each segment
     const parts = [];
     for (let i = 0; i < segments.length; i++) {
       const seg = segments[i];
-      console.log(`[Transcription] Transcribing segment ${i + 1}/${segments.length}`);
+      console.log(`[Transcription] Transcribing segment ${i + 1}/${segments.length} with Mastra`);
       const vtt = await transcribeFileVtt(seg.file, language, onProgress);
       const shifted = shiftVttTimestamps(String(vtt), seg.offsetSeconds);
       const clean = i === 0 ? shifted : shifted.replace(/^WEBVTT\s*\n?/, '');

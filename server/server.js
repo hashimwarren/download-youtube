@@ -7,7 +7,7 @@ const { z } = require('zod');
 const sanitize = require('sanitize-filename');
 const ytdlp = require('yt-dlp-exec');
 const ffmpegPath = require('ffmpeg-static');
-const { transcribeUrlToVtt, transcribeLocalFileToVtt } = require('./transcription');
+const { transcribeUrlToVtt, transcribeLocalFileToVtt } = require('./mastra-transcription');
 const multer = require('multer');
 
 const app = express();
