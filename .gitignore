@@ -101,6 +101,9 @@ temp/
 downloads/
 public/dist/
 
+# Old/backup files
+*.old
+
 # Logs
 logs
 *.log

@@ -7,7 +7,7 @@
     "info": "node index.js --info",
     "mp4": "node index.js --mp4",
     "build": "tsc -p .",
-    "test": "node -e \"console.log('ok')\""
+    "test": "node test-mastra.js"
   },
   "keywords": [],
   "author": "",
