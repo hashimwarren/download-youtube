@@ -26,6 +26,10 @@ function initializeMastraVoice() {
     listeningModel: {
       name: 'whisper-1',
       apiKey: WHISPER_API_KEY
+    },
+    speechModel: {
+      name: 'tts-1',
+      apiKey: WHISPER_API_KEY  // Use same key for speech (though we only use listening)
     }
   };
   
