@@ -1,0 +1,30 @@
+{
+  "name": "download-youtube",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "node server/server.js",
+    "info": "node index.js --info",
+    "mp4": "node index.js --mp4",
+    "build": "tsc -p .",
+    "test": "node -e \"console.log('ok')\""
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "Download a YouTube video and merge best audio+video to MKV using ffmpeg",
+  "dependencies": {
+    "express": "^5.1.0",
+    "ffmpeg-static": "^5.2.0",
+    "form-data": "^4.0.0",
+    "axios": "^1.7.7",
+    "dotenv": "^16.4.5",
+    "multer": "^1.4.5-lts.1",
+    "sanitize-filename": "^1.6.3",
+    "yt-dlp-exec": "^1.0.2",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}
